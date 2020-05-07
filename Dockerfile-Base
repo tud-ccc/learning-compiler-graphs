@@ -1,0 +1,19 @@
+FROM ubuntu:18.04
+RUN apt-get update
+RUN ln -fs /usr/share/zoneinfo/Europe/Dublin /etc/localtime 
+RUN apt-get -y install git cmake build-essential python3 python3-pip r-base graphviz libxml2-dev libcurl4-openssl-dev libssl-dev wget virtualenv vim
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.6 1
+RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+RUN yes | pip install sos sos-r sos-python sos-bash sos-notebook calysto-bash
+RUN python -m sos_notebook.install
+RUN groupadd -r artifact && useradd --no-log-init -r -g artifact artifact
+RUN mkdir -p /home/artifact && chown artifact:artifact /home/artifact
+USER artifact
+WORKDIR /home/artifact
+COPY .  .
+USER root
+RUN Rscript r-deps.R
+RUN chown artifact:artifact -hR .
+USER artifact
+RUN Rscript init-sos-ir.R
+RUN ./build_deps.sh
