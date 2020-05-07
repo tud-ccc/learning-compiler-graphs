@@ -1,0 +1,491 @@
+Date: Sat, 30 Nov 2019 15:04:28 +0100
+Subject: [PATCH] paper experiments.
+
+---
+ requirements.txt               |   7 +-
+ train_task_devmap.py           | 187 ++++++++++++++++++++++-----------
+ train_task_threadcoarsening.py | 113 ++++++++++----------
+ 3 files changed, 191 insertions(+), 116 deletions(-)
+
+diff --git a/requirements.txt b/requirements.txt
+index 3fcff49..93b5f7d 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -11,9 +11,9 @@ h5py==2.9.0
+ html5lib==0.9999999
+ humanize==0.5.1
+ Jinja2>=2.10.1
+-Keras>=2.2.0
+-Keras-Applications>=1.0.2
+-Keras-Preprocessing>=1.0.1
++Keras==2.2.0
++Keras-Applications==1.0.2
++Keras-Preprocessing==1.0.1
+ kiwisolver==1.0.1
+ labm8==0.1.2
+ Markdown==3.1
+@@ -34,6 +34,7 @@ Send2Trash==1.5.0
+ six==1.12.0
+ sklearn==0.0
+ termcolor==1.1.0
++tensorflow==1.7.0
+ tornado==6.0.2
+ umap==0.1.1
+ Werkzeug==0.15.2
+diff --git a/train_task_devmap.py b/train_task_devmap.py
+index 9f3058c..277b155 100644
+--- a/train_task_devmap.py
++++ b/train_task_devmap.py
+@@ -29,8 +29,11 @@ import numpy as np
+ import os
+ import pickle
+ import math
++import json
+ from absl import app
+ from absl import flags
++from collections import Counter, defaultdict
++import time
+ 
+ # Parameters of devmap
+ flags.DEFINE_string('input_data', 'task/devmap', 'Path to input data')
+@@ -40,6 +43,8 @@ flags.DEFINE_integer('num_epochs', 50, 'number of training epochs')
+ flags.DEFINE_integer('batch_size', 64, 'training batch size')
+ flags.DEFINE_integer('dense_layer', 32, 'dense layer size')
+ flags.DEFINE_bool('print_summary', False, 'Print summary of Keras model')
++flags.DEFINE_integer('seed', 1, 'seed')
++flags.DEFINE_string('fold_mode', '', 'fold_mode')
+ 
+ 
+ FLAGS = flags.FLAGS
+@@ -197,17 +202,21 @@ class NCC_devmap:
+         indices = [np.argmax(x) for x in p[0]]
+         return indices
+ 
++    def get_num_trainable_parameters(self):
++        return self.model.count_params()
++
+ 
+ ########################################################################################################################
+ # Evaluate
+ ########################################################################################################################
++
+ # Set seed for reproductibility
+-seed = 204
++kfold_seed = 204
+ 
+ 
+ def evaluate(model, device, data_folder, out_folder, embeddings,
+-             dense_layer_size, print_summary, num_epochs, batch_size) -> pd.DataFrame:
+-    from sklearn.model_selection import StratifiedKFold
++             dense_layer_size, print_summary, num_epochs, batch_size, seed, fold_mode) -> pd.DataFrame:
++    from sklearn.model_selection import StratifiedKFold, GroupKFold
+ 
+     # Create device list
+     if device == 'all':
+@@ -251,68 +260,77 @@ def evaluate(model, device, data_folder, out_folder, embeddings,
+         y_1hot = encode_1hot(y)
+ 
+         # 10-fold cross-validation
+-        n_splits = 10
+-        kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+-        for j, (train_index, test_index) in enumerate(kf.split(sequences, y)):
+-            print('--- Cross validation step [', j, '/ ', n_splits, ']')
++        if fold_mode == 'random':
++            kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=kfold_seed)
++            split = kf.split(sequences, y)
++        elif fold_mode == 'grouped':
++            benchmark_suites = [x.split('-')[0] for x in list(df['benchmark'])]
++            num_benchmark_suites = len(set(benchmark_suites))
++
++            temp = defaultdict(lambda: len(temp))
++            groups = [temp[x] for x in benchmark_suites]
++
++            kf = GroupKFold(n_splits=num_benchmark_suites)
++            split = kf.split(sequences, y, groups)
++
++        print(split)
++
++        for j, (train_index, test_index) in enumerate(split):
++            print('--- Cross validation step [', j, '/ ', 10, ']')
+ 
+             model_name = model.__name__
+             model_basename = model.__basename__
+-            model_path = os.path.join(out_folder, "models/{model_basename}-{platform}-{j}.model".format(
+-                model_basename=model_basename, platform=platform, j=j))
++            model_path = os.path.join(out_folder, "models_{i}/{model_basename}-{platform}-{j}.model".format(
++                i=seed, model_basename=model_basename, platform=platform, j=j))
++            print(model_path)
+             predictions_path = os.path.join(out_folder, "predictions/{model_basename}-{platform}-{j}.result".format(
+                 model_basename=model_basename, platform=platform, j=j))
+             log_dir = os.path.join(out_folder, "logs")
+ 
+-            if fs.exists(predictions_path):
+-                # load result from cache
+-                print("\tFound predictions in", predictions_path, ", skipping...")
+-                with open(predictions_path, 'rb') as infile:
+-                    p = pickle.load(infile)
++            if fs.exists(model_path):
++                # restore trained model from cache
++                print("\n\tFound trained model in", model_path, ", skipping...")
++                model.restore(model_path)
++                train_time = None
+             else:
+ 
+-                if fs.exists(model_path):
+-                    # restore trained model from cache
+-                    print("\n\tFound trained model in", model_path, ", skipping...")
+-                    model.restore(model_path)
+-                else:
+-
+-                    # Initialize model and print summary
+-                    model.init(seed=seed, maxlen=maxlen, embedding_dim=int(embedding_dimension),
+-                               dense_layer_size=dense_layer_size)
+-                    if print_summary:
+-                        model.model.summary()
+-
+-                    # Train and cache a model
+-                    print('\n--- Training model... ')
+-                    model.train(df=df,
+-                                aux_in=aux_in[train_index],
+-                                sequences=embedding_input[train_index, :, :],
+-                                y=y[train_index],
+-                                y_1hot=y_1hot[train_index],
+-                                verbose=False,
+-                                epochs=num_epochs,
+-                                batch_size=batch_size,
+-                                log_dir=log_dir)
+-                    fs.mkdir(fs.dirname(model_path))
+-                    model.save(model_path)
+-                    print('\tsaved model to', model_path)
+-
+-                # test model
+-                print('\n--- Testing model... ')
+-                p = model.predict(
+-                    batch_size=batch_size,
+-                    aux_in=aux_in[test_index],
+-                    sequences=embedding_input[test_index, :, :],
+-                    y=y[test_index],
+-                    y_1hot=y_1hot[test_index],
+-                    verbose=False)
+-
+-                # cache results
+-                fs.mkdir(fs.dirname(predictions_path))
+-                with open(predictions_path, 'wb') as outfile:
+-                    pickle.dump(p, outfile)
+-                print('\tsaved predictions to', predictions_path)
++                # Initialize model and print summary
++                model.init(seed=seed, maxlen=maxlen, embedding_dim=int(embedding_dimension),
++                           dense_layer_size=dense_layer_size)
++                if print_summary:
++                    model.model.summary()
++
++                # Train and cache a model
++                print('\n--- Training model... ')
++                train_time_start = time.time()
++                model.train(df=df,
++                            aux_in=aux_in[train_index],
++                            sequences=embedding_input[train_index, :, :],
++                            y=y[train_index],
++                            y_1hot=y_1hot[train_index],
++                            verbose=True,
++                            epochs=num_epochs,
++                            batch_size=batch_size,
++                            log_dir=log_dir)
++                train_time_end = time.time()
++                train_time = train_time_end - train_time_start
++
++                fs.mkdir(fs.dirname(model_path))
++                model.save(model_path)
++                print('\tsaved model to', model_path)
++
++            # test model
++            print('\n--- Testing model... ')
++            inference_time_start = time.time()
++            p = model.predict(
++                batch_size=batch_size,
++                aux_in=aux_in[test_index],
++                sequences=embedding_input[test_index, :, :],
++                y=y[test_index],
++                y_1hot=y_1hot[test_index],
++                verbose=True)
++            inference_time_end = time.time()
++            inference_time = inference_time_end - inference_time_start
+ 
+             benchmarks = df['benchmark'].values[test_index]     # benchmarks names
+             o = y[test_index]                                   # oracle device mappings (true values)
+@@ -339,6 +357,10 @@ def evaluate(model, device, data_folder, out_folder, embeddings,
+                     "Predicted Mapping": p_,
+                     "Correct?": correct_,
+                     "Speedup": p_speedup_,
++                    "Fold": j,
++                    "num_trainable_parameters": model.get_num_trainable_parameters(),
++                    "train_time": train_time,
++                    "inference_time": inference_time
+                 })
+ 
+     return pd.DataFrame(
+@@ -350,9 +372,40 @@ def evaluate(model, device, data_folder, out_folder, embeddings,
+             "Oracle Mapping",
+             "Predicted Mapping",
+             "Correct?",
+-            "Speedup"
++            "Speedup",
++            "Fold",
++            "num_trainable_parameters",
++            "train_time",
++            "inference_time"
+         ])
+ 
++def parse_report_to_summary(report: pd.DataFrame):
++    report_str = ''
++
++    report_str += 'Grouped by Platform\n'
++    report_str += str(report.groupby(['Platform'])['Platform', 'Correct?', 'Speedup'].mean())
++    report_str += '\n\n'
++
++    report_str += 'Grouped by Platform and Fold\n'
++    report_str += str(report.groupby(['Platform', 'Fold'])['Platform', 'Correct?', 'Speedup'].mean())
++    report_str += '\n\n'
++
++    report_str += 'Grouped by Platform and Benchmark Suite\n'
++    report_str += str(report.groupby(['Platform', 'Benchmark Suite'])['Platform', 'Correct?', 'Speedup'].mean())
++    report_str += '\n\n'
++
++    return report_str
++
++
++def report_to_json(report: pd.DataFrame):
++    result = report.groupby(['Platform'])['Platform', 'Correct?', 'Speedup'].mean()
++    accuracy = result.loc['NVIDIA GTX 970', 'Correct?']
++    speedup = result.loc['NVIDIA GTX 970', 'Speedup']
++
++    return {'accuracy': round(accuracy, 4),
++            'speedup': round(speedup, 4)}
++
++
+ 
+ ########################################################################################################################
+ # Main
+@@ -375,6 +428,8 @@ def main(argv):
+     num_epochs = FLAGS.num_epochs
+     batch_size = FLAGS.batch_size
+     input_data = FLAGS.input_data
++    fold_mode = FLAGS.fold_mode
++    seed = FLAGS.seed
+     if not os.path.exists(os.path.join(input_data, 'kernels_ir')):
+ 
+         # Download data
+@@ -403,10 +458,24 @@ def main(argv):
+     ####################################################################################################################
+     # Train model
+     print("Evaluating DeepTuneInst2Vec ...")
+-    ncc_devmap = evaluate(NCC_devmap(), device, input_data, out, embeddings, dense_layer_size, print_summary,
+-                          num_epochs, batch_size)
++    model = NCC_devmap()
++    ncc_devmap = evaluate(model, device, input_data, out, embeddings, dense_layer_size, print_summary,
++                          num_epochs, batch_size, seed, fold_mode)
+ 
+     ####################################################################################################################
++    # Save report
++    # Print report
++    report_summary = parse_report_to_summary(ncc_devmap)
++    print(report_summary)
++
++    report_json = report_to_json(ncc_devmap)
++
++    # Raw
++    filename = model.__basename__ + '_' + str(seed) + '_raw.txt'
++    with open(os.path.join(out, filename), 'w') as f:
++        f.write(ncc_devmap.to_csv())
++
++
+     # Print results
+     print('\n--- Prediction results')
+     print(ncc_devmap.groupby(['Platform', 'Benchmark Suite'])['Platform', 'Correct?', 'Speedup'].mean())
+diff --git a/train_task_threadcoarsening.py b/train_task_threadcoarsening.py
+index 5872585..053e09a 100644
+--- a/train_task_threadcoarsening.py
++++ b/train_task_threadcoarsening.py
+@@ -32,6 +32,7 @@ import pandas as pd
+ import os
+ import pickle
+ import math
++import time
+ from absl import app
+ from absl import flags
+ 
+@@ -43,6 +44,7 @@ flags.DEFINE_integer('num_epochs', 50, 'number of training epochs')
+ flags.DEFINE_integer('batch_size', 64, 'training batch size')
+ flags.DEFINE_integer('dense_layer', 32, 'dense layer size')
+ flags.DEFINE_bool('print_summary', False, 'Print summary of Keras model')
++flags.DEFINE_integer('seed', 1, 'seed')
+ 
+ FLAGS = flags.FLAGS
+ 
+@@ -204,16 +206,14 @@ class NCC_threadcoarsening:
+         indices = [np.argmax(x) for x in p]
+         return [cfs[x] for x in indices]
+ 
++    def get_num_trainable_parameters(self):
++        return self.model.count_params()
+ 
+ ########################################################################################################################
+ # Evaluate
+ ########################################################################################################################
+-# Set seed for reproductibility
+-seed = 204
+-
+-
+ def evaluate(model, device, data_folder, out_folder, embeddings, dense_layer_size, print_summary, num_epochs,
+-             batch_size):
++             batch_size, seed):
+ 
+     data = []
+ 
+@@ -271,55 +271,47 @@ def evaluate(model, device, data_folder, out_folder, embeddings, dense_layer_siz
+             model_name = model.__name__
+             model_basename = model.__basename__
+ 
+-            model_path = os.path.join(out_folder, "models/{model_basename}-{platform}-{j}.model".format(
+-                model_basename=model_basename, platform=platform, j=j))
+-            predictions_path = os.path.join(out_folder, "predictions/{model_basename}-{platform}-{j}.result".format(
+-                model_basename=model_basename, platform=platform, j=j))
++            model_path = os.path.join(out_folder, "models_{i}/{model_basename}-{platform}-{j}.model".format(
++                i=seed, model_basename=model_basename, platform=platform, j=j))
+ 
+-            if fs.exists(predictions_path):
+-                # load result from cache
+-                print("\tFound predictions in", predictions_path, ", skipping...")
+-                with open(predictions_path, 'rb') as infile:
+-                    p = pickle.load(infile)
++            if fs.exists(model_path):
++                # load a trained model from cache
++                print("\n\tFound trained model in", model_path, ", skipping...")
++                model.restore(model_path)
++                train_time = None
+             else:
+ 
+-                if fs.exists(model_path):
+-                    # load a trained model from cache
+-                    print("\n\tFound trained model in", model_path, ", skipping...")
+-                    model.restore(model_path)
+-                else:
+-
+-                    # Initialize model and print summary
+-                    print('\n--- Training model...')
+-                    model.init(seed, maxlen, int(embedding_dimension), dense_layer_size)
+-                    if print_summary:
+-                        model.model.summary()
+-
+-                    # Train and cache a model
+-                    model.train(sequences=embedding_input[train_index, :, :],
+-                                verbose=True,
+-                                y_1hot=y_1hot[train_index],
+-                                epochs=num_epochs,
+-                                batch_size=batch_size)
+-
+-                    # cache the model
+-                    fs.mkdir(fs.dirname(model_path))
+-                    model.save(model_path)
+-                    print('\tsaved model to', model_path)
+-
+-                # test model
+-                print('\n--- Testing model...')
+-                p = model.predict(sequences=embedding_input[test_index, :, :], batch_size=batch_size)[0]
+-
+-                # The runtimes of some coarsening factors are not recorded in the data table. If that is the case for
+-                # the predicted cf, clamp it down to the highest cf for which the runtime is recorded
+-                p = min(p, 2 ** (len(X_cc[test_index[0]]) - 1))
+-
+-                # cache the prediction
+-                fs.mkdir(fs.dirname(predictions_path))
+-                with open(predictions_path, 'wb') as outfile:
+-                    pickle.dump(p, outfile)
+-                print('\tsaved predictions to', predictions_path)
++                # Initialize model and print summary
++                print('\n--- Training model...')
++                model.init(seed, maxlen, int(embedding_dimension), dense_layer_size)
++                if print_summary:
++                    model.model.summary()
++    
++                # Train and cache a model
++                train_time_start = time.time()
++                model.train(sequences=embedding_input[train_index, :, :],
++                            verbose=True,
++                            y_1hot=y_1hot[train_index],
++                            epochs=num_epochs,
++                            batch_size=batch_size)
++                train_time_end = time.time()
++                train_time = train_time_end - train_time_start
++
++                # cache the model
++                fs.mkdir(fs.dirname(model_path))
++                model.save(model_path)
++                print('\tsaved model to', model_path)
++
++            # test model
++            print('\n--- Testing model...')
++            inference_time_start = time.time()
++            p = model.predict(sequences=embedding_input[test_index, :, :], batch_size=batch_size)[0]
++            inference_time_end = time.time()
++            inference_time = inference_time_end - inference_time_start
++
++            # The runtimes of some coarsening factors are not recorded in the data table. If that is the case for
++            # the predicted cf, clamp it down to the highest cf for which the runtime is recorded
++            p = min(p, 2 ** (len(X_cc[test_index[0]]) - 1))
+ 
+             o = y[test_index[0]]    # oracle prediction (true value)
+             correct = p == o        # predictions' correctness
+@@ -350,11 +342,14 @@ def evaluate(model, device, data_folder, out_folder, embeddings, dense_layer_siz
+                 "Oracle-CF": o,
+                 "Predicted-CF": p,
+                 "Speedup": p_speedup,
+-                "Oracle": p_oracle
++                "Oracle": p_oracle,
++                "num_trainable_parameters": model.get_num_trainable_parameters(),
++                "train_time": train_time,
++                "inference_time": inference_time
+             })
+ 
+     return pd.DataFrame(data, columns=[
+-        "Model", "Platform", "Kernel", "Oracle-CF", "Predicted-CF", "Speedup", "Oracle"])
++        "Model", "Platform", "Kernel", "Oracle-CF", "Predicted-CF", "Speedup", "Oracle", "num_trainable_parameters", "train_time", "inference_time"])
+ 
+ 
+ ########################################################################################################################
+@@ -368,6 +363,7 @@ def main(argv):
+     # Get flag values
+     embeddings = task_utils.get_embeddings()
+     input_data = FLAGS.input_data
++
+     out = FLAGS.out
+     if not os.path.exists(out):
+         os.makedirs(out)
+@@ -378,6 +374,7 @@ def main(argv):
+     print_summary = FLAGS.print_summary
+     num_epochs = FLAGS.num_epochs
+     batch_size = FLAGS.batch_size
++    seed = FLAGS.seed
+     if not os.path.exists(os.path.join(input_data, 'kernels_ir')):
+ 
+         # Download data
+@@ -401,7 +398,15 @@ def main(argv):
+     # Evaluate NCC_threadcoarsening
+     print("\nEvaluating NCC_threadcoarsening ...")
+     ncc_threadcoarsening = evaluate(NCC_threadcoarsening(), device, input_data, out, embeddings, dense_layer_size,
+-                                    print_summary, num_epochs, batch_size)
++                                    print_summary, num_epochs, batch_size, seed)
++
++    ####################################################################################################################
++    # Save report
++    # Raw
++    filename = 'ncc_threadcoarsening' + '_' + str(seed) + '_raw.txt'
++    with open(os.path.join(out, filename), 'w') as f:
++        f.write(ncc_threadcoarsening.to_csv())
++
+ 
+     ####################################################################################################################
+     # Print results
+-- 
+2.17.1
+
