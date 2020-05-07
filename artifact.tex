@@ -1,0 +1,90 @@
+
+\appendix
+\section{Artifact Appendix}
+This appendix describes the published artifact that reproduces the results from this paper.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Abstract}
+
+The artifact is prepared and ready-to-be-run within a Docker container, which will fetch all dependencies, build and prepare it such that it can be executed from a Jupyter notebook.
+Since training the models of the methods is a major computational effort and would take serious time to complete on a desktop machine, we've included trained models to reproduce our results. However, you can re-train if you choose to do so too.
+
+\subsection{Artifact check-list (meta-information)}
+
+{\small
+\begin{itemize}
+  \item {\bf Algorithm: Deep Neural Network}
+  \item {\bf Data set: AMD SDK, NVIDIA SDK, NPB, Rodinia, Parboil, PolyBench, SHOC}
+  \item {\bf Run-time environment: An OS running Docker and the Firefox or Chrome web browsers}
+  \item {\bf Hardware: A GPU-Cluster for training, Commodity hardware for inference}
+  \item {\bf Metrics: Accuracy, Speedup}
+  \item {\bf Output: Trained models, Inference results}
+  \item {\bf How much disk space required (approximately)?: 60 GB}
+  \item {\bf How much time is needed to prepare workflow (approximately)?: 2 hours}
+  \item {\bf How much time is needed to complete experiments (approximately)?: 12 hours}
+  \item {\bf Publicly available?: No}
+\end{itemize}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Description}
+
+\subsubsection{How delivered}
+
+The packaged tarball is available via http on: ...
+
+\subsubsection{Hardware dependencies}
+When re-training the models, a GPU or even better - a GPU cluster with SLURM management software can significantly improve the execution time. For using the models for inference and reproducing the results, commodity hardware with a CPU is sufficient.
+\subsubsection{Software dependencies}
+Docker and a Firefox or Chrome web browser are required. Everything else is managed by the Docker container.
+For re-training the models, a SLURM environment.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Installation}
+The docker container will fetch all dependencies, build and prepare the artifact such that it can be executed from the Jupyter notebook in \texttt{artifact.ipynb}. A provided runscript will build and run everything:
+
+\begin{lstlisting}
+./run.sh
+\end{lstlisting}
+
+After this step (warning: this will take several hours), you can access the Jupyter notebook at port 8888. You should have a link with a token in the terminal output, like: 
+ 
+\begin{lstlisting}
+ https://127.0.0.1:8888/?token=<token>
+\end{lstlisting}
+
+This link should work on your local browser and you should see the Jupyter start page. Select the \texttt{artifact.ipynb} notebook there.
+
+\paragraph{Re-training the models}
+Since training time would take several weeks on a commodity desktop machine, we've included trained models to reproduce our results. If you want to re-train the models, just run \texttt{rm -fr results} to remove the trained models.
+We also supply a script for automatically launching the trainings of the models in a SLURM environment. For this, execute the preprocessing steps in the Jupyter notebook and copy the contents of the directory \texttt{/home/artifact} in the docker container to a SLURM launch machine. Then, run \texttt{python Spawner.py} with a configuration supplied as command line arguments. E.g. \texttt{--experiment} specifies the experiment, and \texttt{--methods} the methods to run for \texttt{--num\_iterations} number of iterations. The result folder needs to be set with \texttt{--report\_write\_root\_dir} and will have the same structure as the result folder that we include with our artifact.
+Please note that the script will launch one job for each method, experiment, and seed.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Experiment workflow}
+In the first steps of the artifact, we create the dataset for our method by constructing clang- and llvm-based graph representations.
+Then we evaluate our method in the different predictive tasks and compare it to the state-of-the-art methods presented in the paper.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Evaluation and expected result}
+The jupyter notebook and the source code present complete pipelines of our main experiments. The result plots in the end should match the results we present in the paper.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Experiment customization}
+While we present an evaluation in two concrete experiments, more experiments can be added due to the availability of the source of the components and the modular software architecture.
+Further example programs can be visualized in our representations by changing the source code in the according jupyter cells.
+
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% \subsection{Notes}
+% 
+% %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Methodology}
+
+Submission, reviewing and badging methodology:
+
+\begin{itemize}
+  \item \url{http://cTuning.org/ae/submission-20190109.html}
+  \item \url{http://cTuning.org/ae/reviewing-20190109.html}
+  \item \url{https://www.acm.org/publications/policies/artifact-review-badging}
+\end{itemize}
+
